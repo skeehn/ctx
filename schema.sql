@@ -29,14 +29,14 @@ CREATE TABLE IF NOT EXISTS links (
     FOREIGN KEY(dst_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
--- chunks: one per named block + a whole‑file fallback chunk
+-- chunks: one per named block + a whole-file fallback chunk
 CREATE TABLE IF NOT EXISTS chunks (
     id          INTEGER PRIMARY KEY,
     file_id     INTEGER,
     chunk_type  TEXT,               -- e.g. "summary", "code/python", "note"
     ordinal     INTEGER,            -- order inside the file
-    content_hash TEXT,              -- hash of the block’s raw text
-    text        TEXT,               -- the block’s actual content (could be large)
+    content_hash TEXT,              -- hash of the block's raw text
+    content     TEXT,               -- the block's actual content (could be large)
     embedding   BLOB,               -- optional, matches header.embeddings if present
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
 );
@@ -50,12 +50,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 
 -- Triggers to keep FTS in sync
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
-    INSERT INTO chunks_fts(rowid, content) VALUES (NEW.id, NEW.text);
+    INSERT INTO chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.text);
+    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.text);
-    INSERT INTO chunks_fts(rowid, content) VALUES (NEW.id, NEW.text);
+    INSERT INTO chunks_fts(chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
+    INSERT INTO chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
 END;

@@ -53,7 +53,7 @@ def upsert_file(conn: sqlite3.Connection, vault_root: Path, rel_path: Path,
                 header: dict, body: str) -> int:
     """
     Insert or update a file record. Returns the file.id.
-    Handles version vector and embedding pre‑compute.
+    Handles version vector and embedding pre-compute.
     """
     # ---- compute body hash and maybe update header ----
     content_hash = sha256_of_body(body)
@@ -70,7 +70,10 @@ def upsert_file(conn: sqlite3.Connection, vault_root: Path, rel_path: Path,
     # In a real implementation you could make this configurable.
     chunk_types_to_embed = {"summary", "definition"}
     full_path = vault_root / rel_path
-    _, _, chunks = parse_ctx_file(full_path)
+    
+    # Parse chunks from the body that was already extracted (not re-read from disk)
+    from parse_ctx import extract_chunks
+    chunks = extract_chunks(body)
     embed_updates = {}
     for ch in chunks:
         if ch["type"] in chunk_types_to_embed and "embedding" not in ch.get("attrs", {}):
@@ -139,7 +142,7 @@ def upsert_file(conn: sqlite3.Connection, vault_root: Path, rel_path: Path,
             emb_blob = embed_updates[ch["hash"]]
         conn.execute(
             """
-            INSERT INTO chunks(file_id, chunk_type, ordinal, content_hash, text, embedding)
+            INSERT INTO chunks(file_id, chunk_type, ordinal, content_hash, content, embedding)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
@@ -149,6 +152,24 @@ def upsert_file(conn: sqlite3.Connection, vault_root: Path, rel_path: Path,
                 ch["hash"],
                 ch["text"],
                 emb_blob,
+            ),
+        )
+    
+    # Fallback: if no named blocks found, create a whole-file chunk
+    if not chunks:
+        content_hash = sha256_of_body(body)
+        conn.execute(
+            """
+            INSERT INTO chunks(file_id, chunk_type, ordinal, content_hash, content, embedding)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                "note",
+                0,
+                content_hash,
+                body.strip(),
+                None,
             ),
         )
     conn.commit()
@@ -235,15 +256,11 @@ def main(vault_root: str, db_path: str):
         try:
             rel = ctx_file.relative_to(vault)
             full_text = ctx_file.read_text(encoding="utf-8")
-            header = {}
-            if full_text.startswith("---CTX-HEADER---"):
-                try:
-                    _, json_part, _ = full_text.split("---CTX-HEADER---", 2)
-                    json_part, _ = json_part.split("---CTX-HEADER---", 1)
-                    header = json.loads(json_part.strip())
-                except Exception:
-                    header = {}
-            if header:
+            # Use parse_header from parse_ctx module
+            from parse_ctx import parse_header
+            header = parse_header(full_text)
+            # Extract body by stripping header if present
+            if "---CTX-HEADER---" in full_text:
                 parts = full_text.split("---CTX-HEADER---")
                 if len(parts) >= 3:
                     body = parts[0] + parts[2]

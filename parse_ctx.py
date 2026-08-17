@@ -39,8 +39,12 @@ def parse_header(raw: str) -> Dict[str, Any]:
     if not raw.startswith(HEADER_START):
         return {}
     try:
-        _, json_part, _ = raw.split(HEADER_START, 2)
-        json_part, _ = json_part.split(HEADER_END, 1)
+        # Split on first two occurrences of HEADER_START
+        parts = raw.split(HEADER_START, 2)
+        if len(parts) < 3:
+            return {}
+        # parts[1] is the JSON content between the first and second marker
+        json_part = parts[1]
         return json.loads(json_part.strip())
     except (ValueError, json.JSONDecodeError):
         return {}
@@ -80,9 +84,19 @@ def parse_ctx_file(path: Path) -> Tuple[Dict[str, Any], str, List[Dict[str, Any]
     """
     full_text = path.read_text(encoding="utf-8")
     header = parse_header(full_text)
+    
+    # Extract body by stripping header if present
+    if HEADER_START in full_text:
+        parts = full_text.split(HEADER_START)
+        if len(parts) >= 3:
+            body = parts[0] + parts[2]
+        else:
+            body = full_text
+    else:
+        body = full_text
+    
     # If header missing or id placeholder, compute real id
     if not header or header.get("id", "").startswith("sha256:placeholder"):
-        body = full_text  # no header to strip
         content_hash = sha256_of_body(full_text)
         header = {
             "v": 1,
@@ -93,16 +107,7 @@ def parse_ctx_file(path: Path) -> Tuple[Dict[str, Any], str, List[Dict[str, Any]
             "links": [],
             "embeddings": {},
         }
-    else:
-        # Strip header to get body for further processing
-        if HEADER_START in full_text:
-            parts = full_text.split(HEADER_START)
-            if len(parts) >= 3:
-                body = parts[0] + parts[2]
-            else:
-                body = full_text
-        else:
-            body = full_text
+    
     chunks = extract_chunks(body)
     return header, body, chunks
 

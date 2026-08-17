@@ -15,8 +15,11 @@ app = FastAPI(title="CTX Vault API", version="0.1.0")
 # ----------------------------------------------------------------------
 # Configuration (could be moved to env vars or config file)
 # ----------------------------------------------------------------------
-VAULT_ROOT = Path(os.environ.get("CTX_VAULT_ROOT", Path.home() / "ai-vault"))
-DB_PATH = VAULT_ROOT / "vault.db"
+# Explicit DB path takes precedence over vault root
+DB_PATH = Path(os.environ.get("CTX_DB_PATH", ""))
+if not DB_PATH:
+    VAULT_ROOT = Path(os.environ.get("CTX_VAULT_ROOT", Path.home() / "ai-vault"))
+    DB_PATH = VAULT_ROOT / "vault.db"
 
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)

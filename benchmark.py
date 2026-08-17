@@ -129,8 +129,8 @@ def start_indexer():
 # ---------- API server ----------
 def start_api_server():
     print("Starting FastAPI server...")
-    # Set environment variable for the vault root
-    os.environ["CTX_VAULT_ROOT"] = str(VAULT_CTX)
+    # Set explicit DB path for the API server
+    os.environ["CTX_DB_PATH"] = str(DB_CTX)
     cmd = [sys.executable, "-m", "uvicorn", "api:app", "--host", API_HOST, "--port", str(API_PORT)]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     # Wait for server to be ready
@@ -149,7 +149,7 @@ def start_api_server():
                 break
             time.sleep(0.5)
     stdout, stderr = proc.communicate()
-    print(f"API server failed to start. Stdout: {stdout.decode()}\nStderr: {stderr.decode()}")
+    print(f"API server failed to start. Stdout: {stdout.decode()}\\nStderr: {stderr.decode()}")
     raise RuntimeError("API server failed to start")
 
 # ---------- Query functions ----------
