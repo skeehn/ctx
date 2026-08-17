@@ -32,10 +32,7 @@ mkdir -p "$VAULT_DIR"
 
 # Initialize database
 echo "🗄️  Initializing database..."
-python3 indexer.py --vault "$VAULT_DIR" --db "$CTX_DB" &
-INDEXER_PID=$!
-sleep 3
-kill $INDEXER_PID 2>/dev/null || true
+python3 indexer.py --vault "$VAULT_DIR" --db "$CTX_DB" --once
 
 # Create systemd/user service for indexer (optional)
 if command -v systemctl &> /dev/null; then

@@ -244,7 +244,7 @@ class CtxHandler(FileSystemEventHandler):
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
-def main(vault_root: str, db_path: str):
+def main(vault_root: str, db_path: str, once: bool = False):
     vault = Path(vault_root).resolve()
     db = Path(db_path).resolve()
     vault.mkdir(parents=True, exist_ok=True)
@@ -271,6 +271,11 @@ def main(vault_root: str, db_path: str):
             upsert_file(conn, vault, rel, header, body)
         except Exception as e:
             print(f"Error processing {ctx_file}: {e}")
+
+    if once:
+        print("Initial scan complete. Exiting (--once flag set).")
+        conn.close()
+        return
 
     print("Starting watchdog observer ...")
     observer = Observer()
@@ -300,5 +305,10 @@ if __name__ == "__main__":
         default="./vault.db",
         help="Path to SQLite database file (default: ./vault.db)",
     )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run initial scan once and exit (don't start watchdog)",
+    )
     args = parser.parse_args()
-    main(os.path.expanduser(args.vault), args.db)
+    main(os.path.expanduser(args.vault), args.db, args.once)
