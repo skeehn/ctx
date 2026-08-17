@@ -1,0 +1,10 @@
+*** Begin Patch
+*** Update File: api.py
+@@ -52,5 +52,5 @@
+ class GraphResponse(BaseModel):
+     note: GraphNode
+     out: List[GraphEdge]
+-    in: List[GraphEdge]
++    in: List[GraphEdge]
+ 
+*** End Patch

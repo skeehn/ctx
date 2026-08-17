@@ -1,0 +1,43 @@
+*** Begin Patch
+*** Update File: api.py
+@@ -1,30 +1,30 @@
+ \"\"\"
+ FastAPI query layer for the .ctx vault.
+ Provides /search, /graph, /chunk, /stats endpoints.
+ \"\"\"
+-import sqlite3
+-from pathlib import Path
+-from typing import List, Optional
+-
+-from fastapi import FastAPI, HTTPException, Query
+-from pydantic import BaseModel
++import sqlite3
++from pathlib import Path
++from typing import List, Optional
++import os
++
++from fastapi import FastAPI, HTTPException, Query
++from pydantic import BaseModel
+ app = FastAPI(title=\"CTX Vault API\", version=\"0.1.0\")
+ 
+ # ----------------------------------------------------------------------
+ # Configuration (could be moved to env vars or config file)
+ # ----------------------------------------------------------------------
+-VAULT_ROOT = Path.home() / \"ai-vault\"
+-DB_PATH = VAULT_ROOT / \"vault.db\"
++VAULT_ROOT = Path(os.environ.get(\"CTX_VAULT_ROOT\", Path.home() / \"ai-vault\"))
++DB_PATH = VAULT_ROOT / \"vault.db\"
+ 
+ 
+ def get_conn() -> sqlite3.Connection:
+     conn = sqlite3.connect(DB_PATH)
+     conn.row_factory = sqlite3.Row
+     conn.execute(\"PRAGMA foreign_keys = ON;\")
+     return conn
+ 
+ 
+ 
+ # ----------------------------------------------------------------------
+ # Pydantic models
+ # ----------------------------------------------------------------------
+*** End Patch

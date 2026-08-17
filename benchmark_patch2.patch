@@ -1,0 +1,14 @@
+*** Begin Patch
+*** Update File: benchmark.py
+@@ -129,6 +129,7 @@
+ def start_api_server():
+     print(\"Starting FastAPI server...\")
+-    cmd = [sys.executable, \"-m\", \"uvicorn\", \"api:app\", \"--host\", API_HOST, \"--port\", str(API_PORT)]
+-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
++    os.environ[\"CTX_VAULT_ROOT\"] = str(VAULT_CTX)
++    cmd = [sys.executable, \"-m\", \"uvicorn\", \"api:app\", \"--host\", API_HOST, \"--port\", str(API_PORT)]
++    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+     # Wait for server to be ready
+     for _ in range(30):
+         try:
+*** End Patch
