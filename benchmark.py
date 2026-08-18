@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 
 # ---------- Configuration ----------
-NUM_NOTES = 200          # number of test notes
+NUM_NOTES = 2000          # number of test notes (increased for better benchmark)
 AVG_WORDS_PER_NOTE = 150  # approximate words per note
-QUERY_COUNT = 10         # number of random queries to run
+QUERY_COUNT = 20         # number of random queries to run
 VAULT_CTX = Path("./test_vault_ctx")
 VAULT_MD = Path("./test_vault_md")
 DB_CTX = Path("./test_vault_ctx/vault.db")
@@ -113,17 +113,20 @@ def create_test_vaults():
 # ---------- Indexer ----------
 def start_indexer():
     print("Starting .ctx indexer...")
-    # Run indexer as subprocess
-    cmd = [sys.executable, "indexer.py", "--vault", str(VAULT_CTX), "--db", str(DB_CTX)]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    # Wait a bit for initial scan
-    time.sleep(5)
-    # Check if process still alive
-    if proc.poll() is not None:
-        stdout, stderr = proc.communicate()
-        print(f"Indexer failed to start: {stderr.decode()}")
-        raise RuntimeError("Indexer failed to start")
-    print("Indexer started (background).")
+    # Run indexer as subprocess with proper env vars
+    env = os.environ.copy()
+    env["CTX_DB_PATH"] = str(DB_CTX)
+    env["CTX_VAULT_ROOT"] = str(VAULT_CTX)
+    python_path = sys.executable
+    print(f"Using Python: {python_path}")
+    cmd = [python_path, "indexer.py", "--vault", str(VAULT_CTX), "--db", str(DB_CTX), "--once"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    # Wait for indexer to complete (since we use --once)
+    stdout, stderr = proc.communicate(timeout=120)
+    if proc.returncode != 0:
+        print(f"Indexer failed: {stderr.decode()}")
+        raise RuntimeError("Indexer failed")
+    print("Indexer completed initial scan.")
     return proc
 
 # ---------- API server ----------
@@ -277,17 +280,16 @@ def main():
             print(f"   Latency improvement: {latency_improvement:.2f}×")
             print(f"   Token improvement: {token_improvement:.2f}×")
     finally:
-        # Cleanup: kill API server and indexer
-        print("\nShutting down API server and indexer...")
-        for proc_name, proc in [("API server", api_proc), ("Indexer", indexer_proc)]:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-            print(f"{proc_name} stopped.")
+        # Cleanup: kill API server (indexer already exited with --once)
+        print("\nShutting down API server...")
+        if api_proc.poll() is None:
+            api_proc.terminate()
+            try:
+                api_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                api_proc.kill()
+                api_proc.wait()
+            print("API server stopped.")
         # Optionally remove test vaults
         # import shutil
         # shutil.rmtree(VAULT_CTX, ignore_errors=True)
