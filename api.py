@@ -1,6 +1,7 @@
 """
 FastAPI query layer for the .ctx vault.
 Provides /search, /graph, /chunk, /stats, /file, /skills, /agents, /insights, /canvas, /tags, /daily endpoints.
+Plus /ingest for multimodal ingestion.
 """
 import sqlite3
 from pathlib import Path
@@ -10,10 +11,32 @@ import uuid
 import time
 from datetime import date
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, BackgroundTasks, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Import auth
+from auth import init_auth_db, get_api_key, rate_limit_middleware, require_scope, APIKey
+
 app = FastAPI(title="CTX Vault API", version="0.3.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add rate limit middleware
+app.middleware("http")(rate_limit_middleware)
+
+# Initialize auth database on startup
+@app.on_event("startup")
+async def startup_event():
+    init_auth_db()
+    print("🔐 Auth database initialized")
 
 # ----------------------------------------------------------------------
 # Configuration (could be moved to env vars or config file)
@@ -98,64 +121,90 @@ class StatsResponse(BaseModel):
 # ----------------------------------------------------------------------
 # Endpoints
 # ----------------------------------------------------------------------
+# Internal search function for testing
+async def internal_search(conn, q: str, limit: int = 10, rerank: bool = True, hybrid: bool = True):
+    """Internal search function that can be called directly with a connection."""
+    # Use FTS5 to rank matches - fetch more candidates for reranking
+    rerank_limit = min(limit * 5, 50) if rerank else limit
+    rows = conn.execute(
+        """
+        SELECT
+            f.path,
+            f.title,
+            c.chunk_type,
+            snippet(chunks_fts, 0, '<b>', '</b>', '...', 10) AS snippet,
+            bm25(chunks_fts) AS score,
+            c.ordinal
+        FROM chunks_fts
+        JOIN chunks c ON c.id = chunks_fts.rowid
+        JOIN files f ON f.id = c.file_id
+        WHERE chunks_fts MATCH ?
+        ORDER BY score
+        LIMIT ?
+        """,
+        (q, limit),
+    ).fetchall()
+    
+    # Convert to dict format for reranking
+    initial_results = []
+    for r in rows:
+        # fetch links and tags for the parent file
+        links = conn.execute(
+            "SELECT dst_id, link_type FROM links WHERE src_id = (SELECT id FROM files WHERE path=?)",
+            (r["path"],),
+        ).fetchall()
+        link_list = [
+            {"target": conn.execute("SELECT path FROM files WHERE id=?", (lid,)).fetchone()[0],
+             "type": ltype}
+            for lid, ltype in links
+        ]
+        tags = [row[0] for row in conn.execute(
+            "SELECT tag FROM tags WHERE file_id = (SELECT id FROM files WHERE path=?)", (r["path"],)
+        ).fetchall()]
+        
+        initial_results.append({
+            "path": r["path"],
+            "title": r["title"],
+            "chunk_type": r["chunk_type"],
+            "snippet": r["snippet"].replace("<b>", "**").replace("</b>", "**"),
+            "score": float(r["score"]),
+            "links": link_list,
+            "tags": tags,
+        })
+    
+    # Apply reranking if enabled
+    if rerank and initial_results:
+        from reranker import search_with_rerank
+        reranked = search_with_rerank(q, initial_results, top_k=limit, use_hybrid=True)
+        return reranked
+    
+    return initial_results[:limit]
+
+
+# FastAPI endpoint
 @app.get("/search", response_model=List[SearchResult])
-def search(
+async def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(10, ge=1, le=100),
+    rerank: bool = Query(True, description="Enable cross-encoder reranking"),
+    hybrid: bool = Query(True, description="Use hybrid BM25 + rerank scoring"),
+    api_key: APIKey = Depends(get_api_key),
 ):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     conn = get_conn()
     try:
-        # Use FTS5 to rank matches
-        rows = conn.execute(
-            """
-            SELECT
-                f.path,
-                f.title,
-                c.chunk_type,
-                snippet(chunks_fts, 0, '<b>', '</b>', '...', 10) AS snippet,
-                bm25(chunks_fts) AS score,
-                c.ordinal
-            FROM chunks_fts
-            JOIN chunks c ON c.id = chunks_fts.rowid
-            JOIN files f ON f.id = c.file_id
-            WHERE chunks_fts MATCH ?
-            ORDER BY score
-            LIMIT ?
-            """,
-            (q, limit),
-        ).fetchall()
-        results = []
-        for r in rows:
-            # fetch links and tags for the parent file
-            links = conn.execute(
-                "SELECT dst_id, link_type FROM links WHERE src_id = (SELECT id FROM files WHERE path=?)",
-                (r["path"],),
-            ).fetchall()
-            link_list = [
-                {"target": conn.execute("SELECT path FROM files WHERE id=?", (lid,)).fetchone()[0],
-                 "type": ltype}
-                for lid, ltype in links
-            ]
-            tags = [row[0] for row in conn.execute(
-                "SELECT tag FROM tags WHERE file_id = (SELECT id FROM files WHERE path=?)", (r["path"],)
-            ).fetchall()]
-            results.append(
-                SearchResult(
-                    path=r["path"],
-                    title=r["title"],
-                    chunk_type=r["chunk_type"],
-                    snippet=r["snippet"].replace("<b>", "**").replace("</b>", "**"),  # simple markdown emphasis
-                    score=float(r["score"]),
-                    links=link_list,
-                    tags=tags,
-                )
-            )
-        return results
+        return await internal_search(conn, q, limit, rerank, True)
     finally:
         conn.close()
 
 @app.get("/graph", response_model=GraphResponse)
-def graph(note: str = Query(..., description="Relative path to .ctx file")):
+def graph(
+    note: str = Query(..., description="Relative path to .ctx file"),
+    api_key: APIKey = Depends(get_api_key),
+):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     conn = get_conn()
     try:
         # Find file id
@@ -198,7 +247,10 @@ def graph(note: str = Query(..., description="Relative path to .ctx file")):
 @app.get("/chunk", response_model=ChunkResponse)
 def chunk(
     id: str = Query(..., description="Chunk content hash (hex)"),
+    api_key: APIKey = Depends(get_api_key),
 ):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     conn = get_conn()
     try:
         row = conn.execute(
@@ -232,7 +284,11 @@ def chunk(
         conn.close()
 
 @app.get("/stats", response_model=StatsResponse)
-def stats():
+def stats(
+    api_key: APIKey = Depends(get_api_key),
+):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     conn = get_conn()
     try:
         notes = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
@@ -259,7 +315,10 @@ def stats():
 @app.get("/file", response_model=FileResponse)
 def get_file(
     path: str = Query(..., description="Relative path to .ctx file"),
+    api_key: APIKey = Depends(get_api_key),
 ):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     """Get complete file with header, body, chunks, links, and tags."""
     conn = get_conn()
     try:
@@ -342,7 +401,10 @@ def get_file(
 @app.get("/file/raw", response_model=FileRawResponse)
 def get_file_raw(
     path: str = Query(..., description="Relative path to .ctx file"),
+    api_key: APIKey = Depends(get_api_key),
 ):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     """Get raw file content as plain text."""
     # Use vault root from env, fallback to DB parent
     vault_root = Path(os.environ.get("CTX_VAULT_ROOT", DB_PATH.parent))
@@ -357,7 +419,10 @@ def get_file_raw(
 @app.get("/file/chunks", response_model=ChunkListResponse)
 def get_file_chunks(
     path: str = Query(..., description="Relative path to .ctx file"),
+    api_key: APIKey = Depends(get_api_key),
 ):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     """Get all chunks for a file."""
     conn = get_conn()
     try:
@@ -467,8 +532,12 @@ class InsightShareRequest(BaseModel):
 
 
 @app.get("/skills", response_model=List[SkillResponse])
-def list_skills(type: Optional[str] = Query(None, description="Filter by skill type")):
-    """List all available skills."""
+def list_skills(
+    type: Optional[str] = Query(None, description="Filter by skill type"),
+    api_key: APIKey = Depends(get_api_key),
+):
+    if "read" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: read")
     registry = get_skill_registry()
     skill_type = SkillType(type) if type else None
     skills = registry.list_skills(skill_type)
@@ -482,8 +551,12 @@ def list_skills(type: Optional[str] = Query(None, description="Filter by skill t
 
 
 @app.post("/skills", response_model=SkillResponse)
-def create_skill(request: SkillCreateRequest):
-    """Create a new skill."""
+def create_skill(
+    request: SkillCreateRequest,
+    api_key: APIKey = Depends(get_api_key),
+):
+    if "write" not in api_key.scopes and "admin" not in api_key.scopes:
+        raise HTTPException(status_code=403, detail="Required scope: write")
     registry = get_skill_registry()
     skill = Skill(
         id=f"skill_{uuid.uuid4().hex[:12]}",
@@ -995,8 +1068,9 @@ def list_canvases():
         conn.close()
 
 
-# Ensure canvases table exists
-def _ensure_canvases_table():
+# Ensure canvases table exists on startup
+@app.on_event("startup")
+async def ensure_canvases_table():
     conn = get_conn()
     try:
         conn.execute("""
@@ -1011,8 +1085,6 @@ def _ensure_canvases_table():
         conn.commit()
     finally:
         conn.close()
-
-_ensure_canvases_table()
 
 
 # Tag endpoints
